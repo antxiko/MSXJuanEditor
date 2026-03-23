@@ -1,0 +1,31 @@
+{
+  "$schema": "https://raw.githubusercontent.com/nicecoding-dev/tauri-v2-schemas/main/src/tauri.conf.schema.json",
+  "productName": "MSX Editor",
+  "version": "1.0.0",
+  "identifier": "com.antxiko.msx-editor",
+  "build": {
+    "frontendDist": "../src"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "MSX Screen, Tile & Sprite Editor",
+        "width": 1280,
+        "height": 900,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/icon.ico"
+    ]
+  }
+}
