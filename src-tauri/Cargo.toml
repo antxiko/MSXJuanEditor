@@ -1,7 +1,7 @@
 [package]
 name = "msx-editor"
 version = "1.0.0"
-description = "MSX Screen, Tile & Sprite Editor"
+description = "MSXJuanEditor — MSX1 tile, screen and sprite editor"
 edition = "2021"
 
 [build-dependencies]

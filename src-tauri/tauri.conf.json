@@ -1,6 +1,6 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicecoding-dev/tauri-v2-schemas/main/src/tauri.conf.schema.json",
-  "productName": "MSX Editor",
+  "productName": "MSXJuanEditor",
   "version": "1.0.0",
   "identifier": "com.antxiko.msx-editor",
   "build": {
@@ -9,7 +9,7 @@
   "app": {
     "windows": [
       {
-        "title": "MSX Screen, Tile & Sprite Editor",
+        "title": "MSXJuanEditor",
         "width": 1280,
         "height": 900,
         "resizable": true

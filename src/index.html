@@ -1,7 +1,8 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-<title>MSX Screen 2 Editor</title>
+<meta charset="UTF-8">
+<title>MSXJuanEditor</title>
 <style>
 * { box-sizing: border-box; }
 body { background: #1a1b2e; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding: 12px; display: flex; gap: 16px; }
@@ -35,11 +36,12 @@ h3 { margin: 0 0 8px; color: #9090c0; font-size: 16px; }
 <body>
 
 <div id="left-panel">
-    <h3>MSX Screen 2 Editor</h3>
+    <h3>MSXJuanEditor</h3>
 
     <div class="toolbar">
         <button id="tab-tiles" class="active" onclick="switchTab('tiles')">Tiles & Map</button>
         <button id="tab-sprites" onclick="switchTab('sprites')">Sprites</button>
+        <button id="tab-mixed" onclick="switchTab('mixed')">Mixed</button>
     </div>
 
     <div id="tiles-tab">
@@ -105,6 +107,8 @@ h3 { margin: 0 0 8px; color: #9090c0; font-size: 16px; }
                     <button onclick="sprInvert()">Invert</button>
                 </div>
                 <div class="toolbar">
+                    <button onclick="sprCopy()" title="Copy current sprite (Ctrl+C)">Copy</button>
+                    <button onclick="sprPaste()" title="Paste over current sprite (Ctrl+V)">Paste</button>
                     <button onclick="sprPrev()">Prev</button>
                     <button onclick="sprNext()">Next</button>
                     <button onclick="sprExportJSON()">Export (.json)</button>
@@ -123,6 +127,42 @@ h3 { margin: 0 0 8px; color: #9090c0; font-size: 16px; }
             </div>
         </div>
     </div><!-- end sprites-tab -->
+
+    <div id="mixed-tab" style="display:none">
+        <div class="toolbar">
+            <button onclick="mixedLoadFromClipboard()">Cargar bloque 8x8 del portapapeles</button>
+            <button onclick="mixedClearTiles()">Quitar bloque</button>
+            <button onclick="mixedClearSprites()">Quitar sprites</button>
+        </div>
+
+        <div style="display:flex; gap:16px; align-items:flex-start;">
+            <div>
+                <div class="label">Composición (8x8 tiles, 64x64 px):</div>
+                <canvas id="mixed-canvas" width="512" height="512" style="border:2px solid #8878c0; border-radius:8px; cursor:crosshair;"></canvas>
+                <div class="sublabel">Click izq: colocar sprite seleccionado · Click der: borrar sprite bajo cursor</div>
+                <div class="sublabel" id="mixed-status">Sin bloque cargado.</div>
+            </div>
+            <div style="width:380px">
+                <div class="label">Sprite a colocar</div>
+                <div class="toolbar">
+                    <span>Set:</span>
+                    <select id="mixed-set-select" onchange="mixedSelectSet(this.value)"></select>
+                    <button id="mixed-mode-8" class="active" onclick="mixedSetMode(8)">8x8</button>
+                    <button id="mixed-mode-16" onclick="mixedSetMode(16)">16x16</button>
+                </div>
+                <canvas id="mixed-picker-canvas" width="384" height="192" style="border:1px solid #444; border-radius:4px;"></canvas>
+                <div class="sublabel" id="mixed-picker-info">Selección: sprite #0</div>
+
+                <div class="label" style="margin-top:8px">Editor del sprite (click izq pinta · click der borra)</div>
+                <canvas id="mixed-edit-canvas" width="224" height="224" style="border:2px solid #8878c0; border-radius:8px; cursor:crosshair;"></canvas>
+                <div class="palette-grid" id="mixed-palette" style="margin-top:6px"></div>
+                <div class="sublabel" id="mixed-color-info">Color: 15 White</div>
+
+                <div class="label" style="margin-top:12px">Sprites colocados (click fila para editar)</div>
+                <div id="mixed-placed-list" style="max-height:200px; overflow-y:auto; border:1px solid #333; padding:4px; border-radius:4px; font-size:12px;"></div>
+            </div>
+        </div>
+    </div><!-- end mixed-tab -->
 </div>
 
 <div id="right-panel">
@@ -462,32 +502,151 @@ tsetCanvas.addEventListener('mousedown', function(e) {
 
 // Screen drawing
 function screenPlace(e) {
-    const rect = scrCanvas.getBoundingClientRect();
-    const tx = Math.floor((e.clientX-rect.left)/(TILE_W*SCALE));
-    const ty = Math.floor((e.clientY-rect.top)/(TILE_H*SCALE));
+    const tx = Math.floor((e.clientX-scrCanvas.getBoundingClientRect().left)/(TILE_W*SCALE));
+    const ty = Math.floor((e.clientY-scrCanvas.getBoundingClientRect().top)/(TILE_H*SCALE));
     if (tx<0||tx>=COLS||ty<0||ty>=ROWS) return;
     screenMap[ty*COLS+tx] = rightClick ? 0 : selectedTile;
     drawTileAt(tx, ty);
 }
-scrCanvas.addEventListener('mousedown', function(e) { e.preventDefault(); isDrawing=true; rightClick=(e.button===2); screenPlace(e); });
-scrCanvas.addEventListener('mousemove', function(e) { if(isDrawing) screenPlace(e); });
-scrCanvas.addEventListener('mouseup', function() { isDrawing=false; });
-scrCanvas.addEventListener('mouseleave', function() { isDrawing=false; });
-scrCanvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
-scrCanvas.addEventListener('mousemove', function(e) {
-    if (isDrawing) { screenPlace(e); return; }
+
+// Map block selection / copy / paste — Shift+drag to select, Ctrl+C / Ctrl+V, Esc to clear
+let mapSelStart = null, mapSelEnd = null;
+let mapHoverX = -1, mapHoverY = -1;
+let mapClipboard = null;
+let isSelecting = false;
+
+function mapTileAt(e) {
     const rect = scrCanvas.getBoundingClientRect();
     const tx = Math.floor((e.clientX-rect.left)/(TILE_W*SCALE));
     const ty = Math.floor((e.clientY-rect.top)/(TILE_H*SCALE));
+    if (tx<0||tx>=COLS||ty<0||ty>=ROWS) return null;
+    return {x:tx, y:ty};
+}
+
+function drawMapSelection() {
+    if (!mapSelStart || !mapSelEnd) return;
+    const x1 = Math.min(mapSelStart.x, mapSelEnd.x);
+    const y1 = Math.min(mapSelStart.y, mapSelEnd.y);
+    const x2 = Math.max(mapSelStart.x, mapSelEnd.x);
+    const y2 = Math.max(mapSelStart.y, mapSelEnd.y);
+    scrCtx.save();
+    scrCtx.strokeStyle = '#ff0';
+    scrCtx.lineWidth = 2;
+    scrCtx.setLineDash([4,4]);
+    scrCtx.strokeRect(x1*TILE_W*SCALE+1, y1*TILE_H*SCALE+1,
+        (x2-x1+1)*TILE_W*SCALE-2, (y2-y1+1)*TILE_H*SCALE-2);
+    scrCtx.restore();
+}
+
+function drawPastePreview() {
+    if (!mapClipboard) return;
+    if (mapHoverX < 0 || mapHoverY < 0) return;
+    if (isSelecting || isDrawing) return;
+    const w = mapClipboard.w * TILE_W * SCALE;
+    const h = mapClipboard.h * TILE_H * SCALE;
+    scrCtx.save();
+    scrCtx.strokeStyle = '#0ff';
+    scrCtx.lineWidth = 2;
+    scrCtx.setLineDash([3,3]);
+    scrCtx.strokeRect(mapHoverX*TILE_W*SCALE+1, mapHoverY*TILE_H*SCALE+1, w-2, h-2);
+    scrCtx.restore();
+}
+
+function redrawScreenOverlays() {
+    drawScreen();
+    drawMapSelection();
+    drawPastePreview();
+}
+
+function mapCopyBlock() {
+    if (!mapSelStart || !mapSelEnd) return;
+    const x1=Math.min(mapSelStart.x,mapSelEnd.x), y1=Math.min(mapSelStart.y,mapSelEnd.y);
+    const x2=Math.max(mapSelStart.x,mapSelEnd.x), y2=Math.max(mapSelStart.y,mapSelEnd.y);
+    const w=x2-x1+1, h=y2-y1+1;
+    const tiles = new Uint8Array(w*h);
+    for (let y=0;y<h;y++) for (let x=0;x<w;x++) tiles[y*w+x] = screenMap[(y1+y)*COLS+(x1+x)];
+    mapClipboard = {w, h, tiles};
+}
+
+function mapPasteBlock(atX, atY) {
+    if (!mapClipboard) return;
+    if (atX === undefined || atY === undefined) {
+        if (mapHoverX>=0 && mapHoverY>=0) { atX = mapHoverX; atY = mapHoverY; }
+        else if (mapSelStart) { atX = Math.min(mapSelStart.x, mapSelEnd.x); atY = Math.min(mapSelStart.y, mapSelEnd.y); }
+        else return;
+    }
+    const {w, h, tiles} = mapClipboard;
+    for (let y=0;y<h;y++) for (let x=0;x<w;x++) {
+        const dx=atX+x, dy=atY+y;
+        if (dx<0||dx>=COLS||dy<0||dy>=ROWS) continue;
+        screenMap[dy*COLS+dx] = tiles[y*w+x];
+    }
+    redrawScreenOverlays();
+}
+
+function mapClearSelection() {
+    mapSelStart = mapSelEnd = null;
+    mapClipboard = null;
+    redrawScreenOverlays();
+}
+
+scrCanvas.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    rightClick = (e.button === 2);
+    if (e.shiftKey && !rightClick) {
+        isSelecting = true;
+        const p = mapTileAt(e);
+        if (p) { mapSelStart = {x:p.x,y:p.y}; mapSelEnd = {x:p.x,y:p.y}; redrawScreenOverlays(); }
+        return;
+    }
+    isDrawing = true; screenPlace(e);
+});
+scrCanvas.addEventListener('mouseup', function() {
+    const wasSelecting = isSelecting;
+    isDrawing = false; isSelecting = false;
+    if (wasSelecting) redrawScreenOverlays();
+});
+scrCanvas.addEventListener('mouseleave', function() {
+    const hadHover = mapHoverX >= 0;
+    isDrawing = false; isSelecting = false;
+    mapHoverX = mapHoverY = -1;
+    if (hadHover) redrawScreenOverlays();
+    const t = document.getElementById('tooltip'); if (t) t.style.display = 'none';
+});
+scrCanvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+scrCanvas.addEventListener('mousemove', function(e) {
+    const p = mapTileAt(e);
+    const newX = p ? p.x : -1, newY = p ? p.y : -1;
+    const hoverChanged = (newX !== mapHoverX || newY !== mapHoverY);
+    mapHoverX = newX; mapHoverY = newY;
+
+    if (isSelecting) {
+        if (p) { mapSelEnd = {x:p.x,y:p.y}; redrawScreenOverlays(); }
+    } else if (isDrawing) {
+        screenPlace(e);
+    } else if (hoverChanged && mapClipboard) {
+        redrawScreenOverlays();
+    }
+
     let tip = document.getElementById('tooltip');
     if (!tip) { tip = document.createElement('div'); tip.id='tooltip'; tip.style.cssText='position:fixed;background:#000;color:#0f0;border:1px solid #0f0;padding:2px 6px;font-size:11px;pointer-events:none;z-index:999;'; document.body.appendChild(tip); }
-    if (tx>=0&&tx<COLS&&ty>=0&&ty<ROWS) {
-        tip.textContent = 'Tile #'+screenMap[ty*COLS+tx]+' ('+tx+','+ty+')';
+    if (p) {
+        tip.textContent = 'Tile #'+screenMap[p.y*COLS+p.x]+' ('+p.x+','+p.y+')';
         tip.style.left = (e.clientX+12)+'px'; tip.style.top = (e.clientY+12)+'px';
         tip.style.display = 'block';
     } else { tip.style.display='none'; }
 });
-scrCanvas.addEventListener('mouseleave', function() { isDrawing=false; const t=document.getElementById('tooltip'); if(t) t.style.display='none'; });
+
+document.addEventListener('keydown', function(e) {
+    const tilesTab = document.getElementById('tiles-tab');
+    if (!tilesTab || tilesTab.style.display === 'none') return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (e.key === 'Escape') { mapClearSelection(); return; }
+    if (!(e.ctrlKey || e.metaKey)) return;
+    if (e.key === 'c' || e.key === 'C') { e.preventDefault(); mapCopyBlock(); }
+    else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); mapPasteBlock(); }
+});
 
 function fillAll() { screenMap.fill(selectedTile); drawScreen(); }
 function clearAll() { screenMap.fill(0); drawScreen(); }
@@ -613,10 +772,13 @@ updateSprPalette();
 function switchTab(tab) {
     document.getElementById('tiles-tab').style.display = tab === 'tiles' ? '' : 'none';
     document.getElementById('sprites-tab').style.display = tab === 'sprites' ? '' : 'none';
+    document.getElementById('mixed-tab').style.display = tab === 'mixed' ? '' : 'none';
     document.getElementById('right-panel').style.display = tab === 'tiles' ? '' : 'none';
     document.getElementById('tab-tiles').classList.toggle('active', tab === 'tiles');
     document.getElementById('tab-sprites').classList.toggle('active', tab === 'sprites');
+    document.getElementById('tab-mixed').classList.toggle('active', tab === 'mixed');
     if (tab === 'sprites') { drawSprGrid(); drawSprEditor(); drawSprPreview(); }
+    if (tab === 'mixed') { mixedRefreshSetSelect(); mixedDrawPicker(); mixedDrawEditor(); mixedUpdatePalette(); mixedRefreshPlacedList(); mixedDraw(); }
 }
 
 function setSprMode(m) {
@@ -831,10 +993,12 @@ sprEditCanvas.addEventListener('contextmenu', function(e) { e.preventDefault(); 
 // Sprite grid click
 sprGridCanvas.addEventListener('mousedown', function(e) {
     const rect = sprGridCanvas.getBoundingClientRect();
-    const cols = sprMode === 8 ? 16 : 8;
-    const cellSize = sprMode === 8 ? 10 : 20;
-    const tx = Math.floor((e.clientX - rect.left) / cellSize);
-    const ty = Math.floor((e.clientY - rect.top) / cellSize);
+    const cols = sprMode === 8 ? 8 : 4;
+    const cellSize = sprMode === 8 ? 48 : 96;
+    const scaleX = sprGridCanvas.width / rect.width;
+    const scaleY = sprGridCanvas.height / rect.height;
+    const tx = Math.floor(((e.clientX - rect.left) * scaleX) / cellSize);
+    const ty = Math.floor(((e.clientY - rect.top) * scaleY) / cellSize);
     const idx = ty * cols + tx;
     if (sprMode === 8) {
         if (idx >= 0 && idx < 32) sprCurrentIdx = idx;
@@ -926,6 +1090,50 @@ function sprNext() {
     sprColor = sprSets[sprCurrentSet].colors[sprCurrentIdx];
     updateSprPalette(); updateSprNum(); drawSprGrid(); drawSprEditor(); drawSprPreview();
 }
+
+// Copy/Paste — clipboard stores patterns + colors for the current mode (1 sub for 8x8, 4 subs for 16x16)
+let sprClipboard = null;
+
+function sprCopy() {
+    const set = sprSets[sprCurrentSet];
+    const count = sprMode === 8 ? 1 : 4;
+    sprClipboard = {
+        mode: sprMode,
+        sprites: [],
+        colors: []
+    };
+    for (let i = 0; i < count; i++) {
+        sprClipboard.sprites.push(new Uint8Array(set.sprites[sprCurrentIdx + i]));
+        sprClipboard.colors.push(set.colors[sprCurrentIdx + i]);
+    }
+}
+
+function sprPaste() {
+    if (!sprClipboard) return;
+    if (sprClipboard.mode !== sprMode) {
+        alert('Clipboard was copied in ' + sprClipboard.mode + 'x' + sprClipboard.mode + ' mode — switch back to paste it.');
+        return;
+    }
+    const set = sprSets[sprCurrentSet];
+    const count = sprMode === 8 ? 1 : 4;
+    for (let i = 0; i < count; i++) {
+        set.sprites[sprCurrentIdx + i] = new Uint8Array(sprClipboard.sprites[i]);
+        set.colors[sprCurrentIdx + i] = sprClipboard.colors[i];
+    }
+    sprColor = set.colors[sprCurrentIdx];
+    updateSprPalette(); drawSprGrid(); drawSprEditor(); drawSprPreview();
+}
+
+// Ctrl+C / Ctrl+V on the sprites tab
+document.addEventListener('keydown', function(e) {
+    if (!(e.ctrlKey || e.metaKey)) return;
+    const sprTab = document.getElementById('sprites-tab');
+    if (!sprTab || sprTab.style.display === 'none') return;
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if (e.key === 'c' || e.key === 'C') { e.preventDefault(); sprCopy(); }
+    else if (e.key === 'v' || e.key === 'V') { e.preventDefault(); sprPaste(); }
+});
 
 // Export/Import
 function sprExportJSON() {
@@ -1041,6 +1249,358 @@ function sprExportC() {
     document.getElementById('spr-output').value = out;
     document.getElementById('spr-output').scrollIntoView();
     document.getElementById('spr-output').select();
+}
+
+// ===== Mixed editor =====
+const MIXED_COLS = 8, MIXED_ROWS = 8, MIXED_SCALE = 8;
+const mixedCanvas = document.getElementById('mixed-canvas');
+const mixedCtx = mixedCanvas.getContext('2d');
+const mixedPickerCanvas = document.getElementById('mixed-picker-canvas');
+const mixedPickerCtx = mixedPickerCanvas.getContext('2d');
+[mixedCtx, mixedPickerCtx].forEach(c => c.imageSmoothingEnabled = false);
+
+let mixedTiles = null; // Uint8Array(MIXED_COLS*MIXED_ROWS) or null
+let mixedSprites = []; // {id, x, y, setIdx, sprIdx, mode}
+let mixedNextId = 1;
+let mixedSelectedSet = 0;
+let mixedSelectedIdx = 0;
+let mixedSpriteMode = 8; // 8 or 16
+let mixedHoverPx = -1, mixedHoverPy = -1;
+
+function mixedRefreshSetSelect() {
+    const sel = document.getElementById('mixed-set-select');
+    sel.innerHTML = '';
+    sprSets.forEach((s, i) => {
+        const o = document.createElement('option');
+        o.value = i; o.textContent = s.name;
+        if (i === mixedSelectedSet) o.selected = true;
+        sel.appendChild(o);
+    });
+}
+
+function mixedSelectSet(idx) {
+    mixedSelectedSet = parseInt(idx);
+    if (mixedSelectedSet >= sprSets.length) mixedSelectedSet = 0;
+    mixedSelectedIdx = 0;
+    mixedDrawPicker(); mixedDrawEditor(); mixedUpdatePalette(); mixedDraw();
+    document.getElementById('mixed-picker-info').textContent = 'Selección: sprite #' + (mixedSpriteMode === 8 ? mixedSelectedIdx : mixedSelectedIdx/4);
+}
+
+function mixedSetMode(m) {
+    mixedSpriteMode = m;
+    document.getElementById('mixed-mode-8').classList.toggle('active', m === 8);
+    document.getElementById('mixed-mode-16').classList.toggle('active', m === 16);
+    if (m === 16) mixedSelectedIdx = mixedSelectedIdx & ~3;
+    mixedDrawPicker(); mixedDrawEditor(); mixedUpdatePalette(); mixedDraw();
+    document.getElementById('mixed-picker-info').textContent = 'Selección: sprite #' + (m === 8 ? mixedSelectedIdx : mixedSelectedIdx/4);
+}
+
+function mixedLoadFromClipboard() {
+    if (!mapClipboard) { alert('No hay nada copiado. Selecciona un bloque ' + MIXED_COLS + 'x' + MIXED_ROWS + ' en Tiles & Map (Shift+drag) y pulsa Ctrl+C.'); return; }
+    if (mapClipboard.w !== MIXED_COLS || mapClipboard.h !== MIXED_ROWS) {
+        alert('El bloque copiado es ' + mapClipboard.w + 'x' + mapClipboard.h + '. Necesita ser ' + MIXED_COLS + 'x' + MIXED_ROWS + '.');
+        return;
+    }
+    mixedTiles = new Uint8Array(mapClipboard.tiles);
+    document.getElementById('mixed-status').textContent = 'Bloque cargado.';
+    mixedDraw();
+}
+
+function mixedClearTiles() { mixedTiles = null; document.getElementById('mixed-status').textContent = 'Sin bloque cargado.'; mixedDraw(); }
+function mixedClearSprites() { mixedSprites = []; mixedRefreshPlacedList(); mixedDraw(); }
+
+// Draw a sprite (pattern bytes + color) at canvas pixel (px,py) with given scale
+function mixedDrawSpritePattern(ctx, set, sprIdx, mode, px, py, scale) {
+    const col = set.colors[sprIdx];
+    const rgb = MSX_PALETTE[col];
+    ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    if (mode === 8) {
+        const spr = set.sprites[sprIdx];
+        for (let r = 0; r < 8; r++) {
+            const byte = spr[r];
+            for (let b = 0; b < 8; b++) if (byte & (128 >> b)) ctx.fillRect(px + b*scale, py + r*scale, scale, scale);
+        }
+    } else {
+        const offsets = [[0,0],[0,8],[8,0],[8,8]]; // TL, BL, TR, BR
+        for (let s = 0; s < 4; s++) {
+            const ox = offsets[s][0], oy = offsets[s][1];
+            const spr = set.sprites[sprIdx + s];
+            for (let r = 0; r < 8; r++) {
+                const byte = spr[r];
+                for (let b = 0; b < 8; b++) if (byte & (128 >> b)) ctx.fillRect(px + (ox+b)*scale, py + (oy+r)*scale, scale, scale);
+            }
+        }
+    }
+}
+
+function mixedDraw() {
+    mixedCtx.fillStyle = '#000';
+    mixedCtx.fillRect(0, 0, mixedCanvas.width, mixedCanvas.height);
+
+    if (mixedTiles && tilesetImg) {
+        for (let y = 0; y < MIXED_ROWS; y++) for (let x = 0; x < MIXED_COLS; x++) {
+            const idx = mixedTiles[y*MIXED_COLS+x];
+            const sx = (idx % TSET_COLS)*TILE_W, sy = Math.floor(idx/TSET_COLS)*TILE_H;
+            mixedCtx.drawImage(tilesetImg, sx, sy, TILE_W, TILE_H,
+                x*TILE_W*MIXED_SCALE, y*TILE_H*MIXED_SCALE, TILE_W*MIXED_SCALE, TILE_H*MIXED_SCALE);
+        }
+    } else {
+        // Subtle checker so the area is visible
+        for (let y = 0; y < MIXED_ROWS*2; y++) for (let x = 0; x < MIXED_COLS*2; x++) {
+            mixedCtx.fillStyle = ((x+y)&1) ? '#1a1a2a' : '#101020';
+            mixedCtx.fillRect(x*TILE_W*MIXED_SCALE/2, y*TILE_H*MIXED_SCALE/2, TILE_W*MIXED_SCALE/2, TILE_H*MIXED_SCALE/2);
+        }
+    }
+
+    // Placed sprites
+    for (const s of mixedSprites) {
+        const set = sprSets[s.setIdx]; if (!set) continue;
+        mixedDrawSpritePattern(mixedCtx, set, s.sprIdx, s.mode, s.x*MIXED_SCALE, s.y*MIXED_SCALE, MIXED_SCALE);
+    }
+
+    // Hover preview ghost — snapped to 8x8
+    if (mixedHoverPx >= 0 && mixedHoverPy >= 0 && sprSets[mixedSelectedSet]) {
+        const set = sprSets[mixedSelectedSet];
+        const size = mixedSpriteMode === 8 ? 8 : 16;
+        const {sx: gx, sy: gy} = mixedSnapToTile(mixedHoverPx, mixedHoverPy);
+        mixedCtx.save();
+        mixedCtx.globalAlpha = 0.5;
+        mixedDrawSpritePattern(mixedCtx, set, mixedSelectedIdx, mixedSpriteMode, gx*MIXED_SCALE, gy*MIXED_SCALE, MIXED_SCALE);
+        mixedCtx.restore();
+        mixedCtx.save();
+        mixedCtx.strokeStyle = '#0ff';
+        mixedCtx.setLineDash([3,3]);
+        mixedCtx.lineWidth = 1;
+        mixedCtx.strokeRect(gx*MIXED_SCALE+0.5, gy*MIXED_SCALE+0.5, size*MIXED_SCALE-1, size*MIXED_SCALE-1);
+        mixedCtx.restore();
+    }
+}
+
+function mixedSnapToTile(px, py) {
+    return { sx: Math.floor(px/8)*8, sy: Math.floor(py/8)*8 };
+}
+
+// ---- In-tab pixel editor ----
+const MIXED_EDIT_SCALE = 14;
+const mixedEditCanvas = document.getElementById('mixed-edit-canvas');
+const mixedEditCtx = mixedEditCanvas.getContext('2d');
+mixedEditCtx.imageSmoothingEnabled = false;
+let mixedEditDrawing = false, mixedEditRightBtn = false;
+
+function mixedDrawEditor() {
+    const set = sprSets[mixedSelectedSet]; if (!set) return;
+    const size = mixedSpriteMode === 8 ? 8 : 16;
+    mixedEditCanvas.width = size * MIXED_EDIT_SCALE;
+    mixedEditCanvas.height = size * MIXED_EDIT_SCALE;
+    const col = set.colors[mixedSelectedIdx];
+    const rgb = MSX_PALETTE[col];
+    for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
+        mixedEditCtx.fillStyle = ((x+y)&1) ? '#2a2a3a' : '#1d1d2c';
+        mixedEditCtx.fillRect(x*MIXED_EDIT_SCALE, y*MIXED_EDIT_SCALE, MIXED_EDIT_SCALE, MIXED_EDIT_SCALE);
+    }
+    mixedEditCtx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+    if (mixedSpriteMode === 8) {
+        const spr = set.sprites[mixedSelectedIdx];
+        for (let r = 0; r < 8; r++) {
+            const byte = spr[r];
+            for (let b = 0; b < 8; b++) if (byte & (128 >> b))
+                mixedEditCtx.fillRect(b*MIXED_EDIT_SCALE, r*MIXED_EDIT_SCALE, MIXED_EDIT_SCALE, MIXED_EDIT_SCALE);
+        }
+    } else {
+        const offsets = [[0,0],[0,8],[8,0],[8,8]];
+        for (let s = 0; s < 4; s++) {
+            const ox = offsets[s][0], oy = offsets[s][1];
+            const spr = set.sprites[mixedSelectedIdx + s];
+            for (let r = 0; r < 8; r++) {
+                const byte = spr[r];
+                for (let b = 0; b < 8; b++) if (byte & (128 >> b))
+                    mixedEditCtx.fillRect((ox+b)*MIXED_EDIT_SCALE, (oy+r)*MIXED_EDIT_SCALE, MIXED_EDIT_SCALE, MIXED_EDIT_SCALE);
+            }
+        }
+    }
+    // Sub-sprite divider for 16x16
+    if (mixedSpriteMode === 16) {
+        mixedEditCtx.strokeStyle = '#555';
+        mixedEditCtx.lineWidth = 1;
+        mixedEditCtx.beginPath();
+        mixedEditCtx.moveTo(8*MIXED_EDIT_SCALE, 0); mixedEditCtx.lineTo(8*MIXED_EDIT_SCALE, 16*MIXED_EDIT_SCALE);
+        mixedEditCtx.moveTo(0, 8*MIXED_EDIT_SCALE); mixedEditCtx.lineTo(16*MIXED_EDIT_SCALE, 8*MIXED_EDIT_SCALE);
+        mixedEditCtx.stroke();
+    }
+}
+
+function mixedEditPlace(e) {
+    const set = sprSets[mixedSelectedSet]; if (!set) return;
+    const rect = mixedEditCanvas.getBoundingClientRect();
+    const sx = mixedEditCanvas.width / rect.width;
+    const sy = mixedEditCanvas.height / rect.height;
+    const px = Math.floor(((e.clientX - rect.left)*sx) / MIXED_EDIT_SCALE);
+    const py = Math.floor(((e.clientY - rect.top)*sy) / MIXED_EDIT_SCALE);
+    const size = mixedSpriteMode === 8 ? 8 : 16;
+    if (px < 0 || px >= size || py < 0 || py >= size) return;
+    if (mixedSpriteMode === 8) {
+        if (mixedEditRightBtn) set.sprites[mixedSelectedIdx][py] &= ~(128 >> px);
+        else set.sprites[mixedSelectedIdx][py] |= (128 >> px);
+    } else {
+        const subX = px >= 8 ? 1 : 0, subY = py >= 8 ? 1 : 0;
+        const subIdx = subY + subX*2; // TL=0, BL=1, TR=2, BR=3
+        const lx = px % 8, ly = py % 8;
+        if (mixedEditRightBtn) set.sprites[mixedSelectedIdx + subIdx][ly] &= ~(128 >> lx);
+        else set.sprites[mixedSelectedIdx + subIdx][ly] |= (128 >> lx);
+    }
+    mixedDrawEditor(); mixedDrawPicker(); mixedDraw();
+    // Sync sprites tab if its UI is mounted (it is)
+    if (sprCurrentSet === mixedSelectedSet) {
+        if (typeof drawSprGrid === 'function') {
+            try { drawSprGrid(); drawSprEditor(); drawSprPreview(); } catch (_) {}
+        }
+    }
+}
+mixedEditCanvas.addEventListener('mousedown', function(e) { e.preventDefault(); mixedEditDrawing = true; mixedEditRightBtn = (e.button === 2); mixedEditPlace(e); });
+mixedEditCanvas.addEventListener('mousemove', function(e) { if (mixedEditDrawing) mixedEditPlace(e); });
+mixedEditCanvas.addEventListener('mouseup', function() { mixedEditDrawing = false; });
+mixedEditCanvas.addEventListener('mouseleave', function() { mixedEditDrawing = false; });
+mixedEditCanvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+
+// Palette
+const mixedPalDiv = document.getElementById('mixed-palette');
+for (let i = 0; i < 16; i++) {
+    const d = document.createElement('div');
+    d.className = 'pal-color';
+    d.style.background = i === 0
+        ? 'repeating-conic-gradient(#808080 0% 25%, #404040 0% 50%) 50%/8px 8px'
+        : `rgb(${MSX_PALETTE[i][0]},${MSX_PALETTE[i][1]},${MSX_PALETTE[i][2]})`;
+    d.title = `${i}: ${MSX_PALETTE[i][3]}`;
+    d.addEventListener('click', function() {
+        const set = sprSets[mixedSelectedSet]; if (!set) return;
+        if (i === 0) return; // 0 is transparent — use right-click in editor to erase
+        set.colors[mixedSelectedIdx] = i;
+        if (mixedSpriteMode === 16) {
+            const base = mixedSelectedIdx & ~3;
+            for (let j = 0; j < 4; j++) set.colors[base + j] = i;
+        }
+        mixedUpdatePalette(); mixedDrawEditor(); mixedDrawPicker(); mixedDraw();
+        if (sprCurrentSet === mixedSelectedSet) {
+            try { drawSprGrid(); drawSprEditor(); drawSprPreview(); updateSprPalette(); } catch (_) {}
+        }
+    });
+    mixedPalDiv.appendChild(d);
+}
+function mixedUpdatePalette() {
+    const set = sprSets[mixedSelectedSet]; if (!set) return;
+    const cur = set.colors[mixedSelectedIdx];
+    mixedPalDiv.querySelectorAll('.pal-color').forEach((d, i) => d.classList.toggle('fg-selected', i === cur));
+    document.getElementById('mixed-color-info').textContent = 'Color: ' + cur + ' ' + MSX_PALETTE[cur][3];
+}
+
+function mixedDrawPicker() {
+    const set = sprSets[mixedSelectedSet]; if (!set) return;
+    const cols = mixedSpriteMode === 8 ? 8 : 4;
+    const cellSize = mixedSpriteMode === 8 ? 48 : 96;
+    const count = mixedSpriteMode === 8 ? 32 : 8;
+    mixedPickerCanvas.width = cols * cellSize;
+    mixedPickerCanvas.height = Math.ceil(count/cols) * cellSize;
+    mixedPickerCtx.fillStyle = '#111';
+    mixedPickerCtx.fillRect(0, 0, mixedPickerCanvas.width, mixedPickerCanvas.height);
+    for (let idx = 0; idx < count; idx++) {
+        const gx = (idx % cols) * cellSize, gy = Math.floor(idx/cols) * cellSize;
+        const sprIdx = mixedSpriteMode === 8 ? idx : idx*4;
+        const scale = (cellSize - 2) / (mixedSpriteMode === 8 ? 8 : 16);
+        mixedDrawSpritePattern(mixedPickerCtx, set, sprIdx, mixedSpriteMode, gx+1, gy+1, scale);
+        const selIdx = mixedSpriteMode === 8 ? mixedSelectedIdx : mixedSelectedIdx/4;
+        if (idx === selIdx) {
+            mixedPickerCtx.strokeStyle = 'yellow';
+            mixedPickerCtx.lineWidth = 2;
+            mixedPickerCtx.strokeRect(gx+1, gy+1, cellSize-2, cellSize-2);
+        }
+    }
+}
+
+mixedPickerCanvas.addEventListener('mousedown', function(e) {
+    const rect = mixedPickerCanvas.getBoundingClientRect();
+    const cols = mixedSpriteMode === 8 ? 8 : 4;
+    const cellSize = mixedSpriteMode === 8 ? 48 : 96;
+    const sx = mixedPickerCanvas.width / rect.width;
+    const sy = mixedPickerCanvas.height / rect.height;
+    const tx = Math.floor(((e.clientX - rect.left)*sx) / cellSize);
+    const ty = Math.floor(((e.clientY - rect.top)*sy) / cellSize);
+    const idx = ty * cols + tx;
+    const limit = mixedSpriteMode === 8 ? 32 : 8;
+    if (idx < 0 || idx >= limit) return;
+    mixedSelectedIdx = mixedSpriteMode === 8 ? idx : idx*4;
+    document.getElementById('mixed-picker-info').textContent = 'Selección: sprite #' + (mixedSpriteMode === 8 ? mixedSelectedIdx : mixedSelectedIdx/4);
+    mixedDrawPicker(); mixedDrawEditor(); mixedUpdatePalette();
+});
+
+function mixedCanvasPx(e) {
+    const rect = mixedCanvas.getBoundingClientRect();
+    const sx = mixedCanvas.width / rect.width;
+    const sy = mixedCanvas.height / rect.height;
+    const px = Math.floor(((e.clientX - rect.left)*sx) / MIXED_SCALE);
+    const py = Math.floor(((e.clientY - rect.top)*sy) / MIXED_SCALE);
+    return {px, py};
+}
+
+mixedCanvas.addEventListener('mousemove', function(e) {
+    const {px, py} = mixedCanvasPx(e);
+    if (px === mixedHoverPx && py === mixedHoverPy) return;
+    mixedHoverPx = px; mixedHoverPy = py;
+    mixedDraw();
+});
+mixedCanvas.addEventListener('mouseleave', function() {
+    if (mixedHoverPx === -1 && mixedHoverPy === -1) return;
+    mixedHoverPx = -1; mixedHoverPy = -1; mixedDraw();
+});
+mixedCanvas.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+mixedCanvas.addEventListener('mousedown', function(e) {
+    e.preventDefault();
+    const {px, py} = mixedCanvasPx(e);
+    const size = mixedSpriteMode === 8 ? 8 : 16;
+    if (e.button === 2) {
+        // Remove topmost sprite under cursor
+        for (let i = mixedSprites.length - 1; i >= 0; i--) {
+            const s = mixedSprites[i];
+            const sz = s.mode === 8 ? 8 : 16;
+            if (px >= s.x && px < s.x+sz && py >= s.y && py < s.y+sz) {
+                mixedSprites.splice(i, 1);
+                mixedRefreshPlacedList(); mixedDraw();
+                return;
+            }
+        }
+    } else {
+        const {sx, sy} = mixedSnapToTile(px, py);
+        mixedSprites.push({id: mixedNextId++, x: sx, y: sy, setIdx: mixedSelectedSet, sprIdx: mixedSelectedIdx, mode: mixedSpriteMode});
+        mixedRefreshPlacedList(); mixedDraw();
+    }
+});
+
+function mixedRefreshPlacedList() {
+    const div = document.getElementById('mixed-placed-list');
+    if (mixedSprites.length === 0) { div.innerHTML = '<i>Ninguno colocado.</i>'; return; }
+    div.innerHTML = '';
+    mixedSprites.forEach(s => {
+        const setName = (sprSets[s.setIdx] && sprSets[s.setIdx].name) || '?';
+        const sprNum = s.mode === 8 ? s.sprIdx : s.sprIdx/4;
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:2px 4px; cursor:pointer; border-radius:3px;';
+        row.title = 'Click: editar este sprite';
+        row.onmouseover = () => row.style.background = '#2a2b3e';
+        row.onmouseout  = () => row.style.background = '';
+        const label = document.createElement('span');
+        label.textContent = '#' + s.id + ' · ' + setName + ' · ' + s.mode + 'x' + s.mode + ' spr ' + sprNum + ' · (' + s.x + ',' + s.y + ')';
+        label.onclick = () => {
+            mixedSelectedSet = s.setIdx;
+            mixedSelectedIdx = s.sprIdx;
+            mixedSetMode(s.mode);
+            document.getElementById('mixed-set-select').value = s.setIdx;
+        };
+        const btn = document.createElement('button');
+        btn.textContent = 'X'; btn.style.padding = '0 6px';
+        btn.onclick = (e) => { e.stopPropagation(); mixedSprites = mixedSprites.filter(x => x.id !== s.id); mixedRefreshPlacedList(); mixedDraw(); };
+        row.appendChild(label);
+        row.appendChild(btn);
+        div.appendChild(row);
+    });
 }
 
 </script>
