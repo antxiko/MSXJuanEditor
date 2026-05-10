@@ -58,6 +58,7 @@ h3 { margin: 0 0 8px; color: #9090c0; font-size: 16px; }
         <button onclick="exportCArray()">Export C Array</button>
         <button onclick="exportBin()">Export .bin</button>
         <button onclick="loadTileset()">Load PNG</button>
+        <button onclick="importImage()" title="Importa una imagen completa (PNG/BMP) y genera tileset + mapa quitando duplicados">Import Image</button>
         <button onclick="saveTileset()">Save Tileset PNG</button>
     </div>
 
@@ -203,7 +204,8 @@ const MSX_PALETTE = [
 ];
 
 const COLS = 32, ROWS = 24, TILE_W = 8, TILE_H = 8, SCALE = 3;
-const TSET_COLS = 32, TSET_ROWS = 8;
+const TSET_COLS = 32;
+let TSET_ROWS = 8;
 const EDIT_SCALE = 32; // pixel size in tile editor
 
 let tilesetImg = null;
@@ -295,6 +297,140 @@ function createTilesetCanvas() {
     tilesetCanvas2D.height = tilesetImg.height;
     const ctx = tilesetCanvas2D.getContext('2d');
     ctx.drawImage(tilesetImg, 0, 0);
+}
+
+// Import full image: extract unique 8x8 tiles -> tileset + map
+function importImage() {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.png,.bmp,.jpg,.jpeg';
+    input.onchange = function(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(ev) {
+            const img = new Image();
+            img.onload = function() {
+                const w = img.width, h = img.height;
+                if (w % 8 !== 0 || h % 8 !== 0) {
+                    alert('Las dimensiones de la imagen deben ser múltiplos de 8.\nRecibido: ' + w + 'x' + h);
+                    return;
+                }
+                const cols = w / 8, rows = h / 8;
+                const tmpCanvas = document.createElement('canvas');
+                tmpCanvas.width = w; tmpCanvas.height = h;
+                const tmpCtx = tmpCanvas.getContext('2d');
+                tmpCtx.imageSmoothingEnabled = false;
+                tmpCtx.drawImage(img, 0, 0);
+                const imgData = tmpCtx.getImageData(0, 0, w, h);
+                const px = imgData.data;
+
+                // Extract unique tiles via RGB hash
+                const tileHashes = new Map();
+                const uniqueTiles = []; // each: Uint8ClampedArray of 256 bytes (RGBA)
+                const tileMapArr = [];
+
+                for (let ty = 0; ty < rows; ty++) {
+                    for (let tx = 0; tx < cols; tx++) {
+                        const hashParts = [];
+                        for (let y = 0; y < 8; y++) {
+                            for (let x = 0; x < 8; x++) {
+                                const idx = ((ty*8 + y) * w + (tx*8 + x)) * 4;
+                                hashParts.push(px[idx], px[idx+1], px[idx+2]);
+                            }
+                        }
+                        const hash = hashParts.join(',');
+                        let tileIdx;
+                        if (tileHashes.has(hash)) {
+                            tileIdx = tileHashes.get(hash);
+                        } else {
+                            tileIdx = uniqueTiles.length;
+                            tileHashes.set(hash, tileIdx);
+                            const tileData = new Uint8ClampedArray(256);
+                            for (let y = 0; y < 8; y++)
+                                for (let x = 0; x < 8; x++) {
+                                    const sIdx = ((ty*8 + y) * w + (tx*8 + x)) * 4;
+                                    const dIdx = (y*8 + x) * 4;
+                                    tileData[dIdx]   = px[sIdx];
+                                    tileData[dIdx+1] = px[sIdx+1];
+                                    tileData[dIdx+2] = px[sIdx+2];
+                                    tileData[dIdx+3] = 255;
+                                }
+                            uniqueTiles.push(tileData);
+                        }
+                        tileMapArr.push(tileIdx);
+                    }
+                }
+
+                if (uniqueTiles.length > 256) {
+                    if (!confirm(uniqueTiles.length + ' tiles únicos (máximo MSX = 256). ¿Continuar igualmente? Sólo los primeros 256 cabrán en la VRAM real.')) return;
+                }
+
+                // Move darkest tile to index 0 (convention: tile 0 = empty/background)
+                let darkIdx = 0, darkSum = Infinity;
+                for (let ti = 0; ti < uniqueTiles.length; ti++) {
+                    let sum = 0;
+                    const t = uniqueTiles[ti];
+                    for (let p = 0; p < 256; p += 4) sum += t[p] + t[p+1] + t[p+2];
+                    if (sum < darkSum) { darkSum = sum; darkIdx = ti; }
+                }
+                if (darkIdx > 0) {
+                    const tmp = uniqueTiles[0];
+                    uniqueTiles[0] = uniqueTiles[darkIdx];
+                    uniqueTiles[darkIdx] = tmp;
+                    for (let mi = 0; mi < tileMapArr.length; mi++) {
+                        if (tileMapArr[mi] === 0) tileMapArr[mi] = darkIdx;
+                        else if (tileMapArr[mi] === darkIdx) tileMapArr[mi] = 0;
+                    }
+                }
+
+                // Build new tileset canvas (32 cols x N rows)
+                const newRows = Math.max(Math.ceil(uniqueTiles.length / TSET_COLS), 1);
+                const tsetC = document.createElement('canvas');
+                tsetC.width = TSET_COLS * 8;
+                tsetC.height = newRows * 8;
+                const tsetC2D = tsetC.getContext('2d');
+                tsetC2D.imageSmoothingEnabled = false;
+                tsetC2D.fillStyle = '#000';
+                tsetC2D.fillRect(0, 0, tsetC.width, tsetC.height);
+                for (let i = 0; i < uniqueTiles.length; i++) {
+                    const tx = (i % TSET_COLS) * 8;
+                    const ty = Math.floor(i / TSET_COLS) * 8;
+                    const id = tsetC2D.createImageData(8, 8);
+                    id.data.set(uniqueTiles[i]);
+                    tsetC2D.putImageData(id, tx, ty);
+                }
+
+                // Apply
+                TSET_ROWS = newRows;
+                tilesetCanvas2D = tsetC;
+                tilesetImg = tsetC;
+
+                // Resize visible tileset canvas
+                tsetCanvas.width = TSET_COLS * TILE_W * SCALE;
+                tsetCanvas.height = TSET_ROWS * TILE_H * SCALE;
+
+                // Apply map (clipped to 32x24)
+                screenMap.fill(0);
+                const useCols = Math.min(cols, COLS);
+                const useRows = Math.min(rows, ROWS);
+                for (let y = 0; y < useRows; y++)
+                    for (let x = 0; x < useCols; x++)
+                        screenMap[y * COLS + x] = tileMapArr[y * cols + x];
+
+                selectedTile = 0;
+                drawTileset(); drawScreen(); updateSelected();
+                loadTileToEditor(0);
+
+                let msg = 'Importado: ' + uniqueTiles.length + ' tiles únicos · mapa origen ' + cols + 'x' + rows;
+                if (cols > COLS || rows > ROWS) msg += '\nMapa recortado a 32x24 (origen ' + cols + 'x' + rows + ').';
+                alert(msg);
+            };
+            img.src = ev.target.result;
+        };
+        reader.readAsDataURL(file);
+    };
+    input.click();
 }
 
 function closestMSXColor(r, g, b) {

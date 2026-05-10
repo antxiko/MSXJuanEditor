@@ -16,6 +16,7 @@ Construido con Tauri (Rust + WebView2). Sin Electron. ~8 MB. Un click.
 - Validación 2-colores-por-fila en tiempo real.
 - Flip H/V, rotar, invertir, limpiar.
 - Cargar tileset PNG (256×64 = 32×8 tiles), guardar PNG modificado.
+- **Import Image**: importa una imagen completa (PNG/BMP/JPG) y la trocea automáticamente en tiles 8×8 únicos generando el tileset + el mapa. Mueve el tile más oscuro al índice 0 y avisa si pasas de 256 únicos.
 
 ### Editor de mapa
 - Rejilla completa 32×24 (256×192, resolución nativa Screen 2).

@@ -74,6 +74,7 @@ Botones de la barra:
 | `Export C Array` | Genera `static const u8 g_ScreenLayout[768]` listo para MSXgl |
 | `Export .bin` | Descarga 768 bytes raw (carga directa con `VDP_WriteVRAM_16K`) |
 | `Load PNG` | Carga un tileset PNG de 256×64 (32 columnas × 8 filas de 8×8) |
+| `Import Image` | Importa una imagen entera (PNG / BMP / JPG) y la **trocea en tiles 8×8 quitando duplicados**: detecta los tiles únicos por hash de píxeles, mueve el más oscuro al índice 0, genera el tileset (extiende el tileset si se necesitan más de 8 filas) y rellena el mapa con los índices correspondientes. Las dimensiones de la imagen deben ser múltiplos de 8. Si hay más de 256 tiles únicos te avisa. Si la imagen es más grande que 256×192 el mapa se recorta a 32×24. |
 | `Save Tileset PNG` | Guarda el tileset modificado como PNG |
 
 ### Editor de tile (panel derecho)
