@@ -66,6 +66,14 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: MSXJuanEditor ${{ github.ref_name }}
+          releaseBody: |
+            MSXJuanEditor ${{ github.ref_name }} — native MSX1 (TMS9918A Screen 2) tile, map and sprite editor.
+
+            **Downloads** below: portable Windows .exe and MSI, macOS universal .dmg / .app (Intel + Apple Silicon), Linux .deb / .AppImage / .rpm. Built end-to-end by GitHub Actions.
+
+            **Documentation:** see [USER_MANUAL.md](https://github.com/${{ github.repository }}/blob/main/USER_MANUAL.md) for the full feature reference, keyboard shortcuts, and export-format details.
+
+            **WebView2 (Windows):** included on Windows 11; on Windows 10 use the NSIS `_x64-setup.exe` (auto-downloads WebView2 if missing) instead of the portable build if your system doesn't already have it.
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
