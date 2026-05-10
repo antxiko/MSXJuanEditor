@@ -29,11 +29,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
-          packages: |
-            platform-tools
-            platforms;android-34
-            build-tools;34.0.0
-            ndk;26.1.10909125
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0 ndk;26.1.10909125'
 
       - name: Set NDK_HOME
         run: echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
@@ -54,9 +50,6 @@ jobs:
 
       - name: Install npm dependencies
         run: npm install
-
-      - name: Tauri Android init
-        run: npx tauri android init
 
       - name: Build Android (debug APK)
         run: npx tauri android build --apk --debug
