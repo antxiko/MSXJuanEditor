@@ -1,0 +1,76 @@
+name: Android build
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - android
+    paths:
+      - 'src/**'
+      - 'src-tauri/**'
+      - '.github/workflows/android.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
+            ndk;26.1.10909125
+
+      - name: Set NDK_HOME
+        run: echo "NDK_HOME=$ANDROID_HOME/ndk/26.1.10909125" >> $GITHUB_ENV
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Rust + Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ./src-tauri -> target
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Tauri Android init
+        run: npx tauri android init
+
+      - name: Build Android (debug APK)
+        run: npx tauri android build --apk --debug
+
+      - name: Locate APK
+        id: apk
+        run: |
+          path=$(find src-tauri/gen/android -name "*.apk" -path "*outputs*" | head -1)
+          echo "Found: $path"
+          echo "path=$path" >> $GITHUB_OUTPUT
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MSXJuanEditor-android-debug
+          path: ${{ steps.apk.outputs.path }}
+          if-no-files-found: error

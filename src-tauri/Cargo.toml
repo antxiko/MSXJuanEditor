@@ -4,6 +4,10 @@ version = "1.1.1"
 description = "MSXJuanEditor — MSX1 tile, screen and sprite editor"
 edition = "2021"
 
+[lib]
+name = "msx_editor_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
