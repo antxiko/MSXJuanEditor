@@ -31,7 +31,23 @@ textarea { background: #12132a; color: #6fdf6f; border: 1px solid #333560; width
 input[type=file] { display: none; }
 select { background: #2d2f50; color: #d0d0e8; border: 1px solid #444670; padding: 4px 8px; border-radius: 6px; font-family: inherit; }
 h3 { margin: 0 0 8px; color: #9090c0; font-size: 16px; }
+
+/* Android-only touch UI. Hidden on desktop; revealed via .android class on <html>. */
+.touch-only { display: none; }
+html.android .touch-only { display: flex; }
+html.android .desktop-only { display: none; }
+html.android .toolbar { gap: 6px; }
+html.android button { padding: 8px 12px; font-size: 14px; }
+html.android #screen-canvas, html.android #mixed-canvas, html.android #tile-edit-canvas, html.android #spr-edit-canvas, html.android #tileset-canvas, html.android #spr-grid-canvas, html.android #mixed-picker-canvas, html.android #mixed-edit-canvas { touch-action: none; }
 </style>
+<script>
+  // Detect Android early so CSS class is set before body renders.
+  (function() {
+    if (/Android/i.test(navigator.userAgent)) {
+      document.documentElement.classList.add('android');
+    }
+  })();
+</script>
 </head>
 <body>
 
@@ -63,6 +79,14 @@ h3 { margin: 0 0 8px; color: #9090c0; font-size: 16px; }
     </div>
 
     <div class="label">Screen (32x24 = 256x192):</div>
+    <div class="toolbar touch-only" id="map-touch-toolbar">
+        <span style="font-size:12px;color:#aaa">Modo:</span>
+        <button id="tool-paint" class="active" onclick="setMapTool('paint')">🖌 Paint</button>
+        <button id="tool-erase" onclick="setMapTool('erase')">🩹 Erase</button>
+        <button id="tool-select" onclick="setMapTool('select')">⊞ Select</button>
+        <button onclick="mapCopyBlock()" title="Copia el bloque seleccionado">Copy</button>
+        <button onclick="mapClearSelection()" title="Limpia selección y portapapeles">Clear</button>
+    </div>
     <canvas id="screen-canvas"></canvas>
 
     <div class="label">Output:</div>
@@ -86,6 +110,10 @@ h3 { margin: 0 0 8px; color: #9090c0; font-size: 16px; }
         <div style="display:flex;gap:15px;">
             <div style="flex:1">
                 <div class="sublabel">Sprite Editor:</div>
+                <div class="toolbar touch-only">
+                    <button id="spr-tool-paint" class="active" onclick="setSprTool('paint')">🖌 Paint</button>
+                    <button id="spr-tool-erase" onclick="setSprTool('erase')">🩹 Erase</button>
+                </div>
                 <canvas id="spr-edit-canvas" width="384" height="384"></canvas>
 
                 <div style="display:flex;gap:10px;align-items:flex-start;margin:5px 0">
@@ -139,6 +167,11 @@ h3 { margin: 0 0 8px; color: #9090c0; font-size: 16px; }
         <div style="display:flex; gap:16px; align-items:flex-start;">
             <div>
                 <div class="label">Composición (8x8 tiles, 64x64 px):</div>
+                <div class="toolbar touch-only">
+                    <button id="mixed-tool-place" class="active" onclick="setMixedTool('place')">📍 Colocar</button>
+                    <button id="mixed-tool-erase" onclick="setMixedTool('erase')">🩹 Borrar</button>
+                    <span style="font-size:11px;color:#888">· Long-press un sprite colocado = borrar</span>
+                </div>
                 <canvas id="mixed-canvas" width="512" height="512" style="border:2px solid #8878c0; border-radius:8px; cursor:crosshair;"></canvas>
                 <div class="sublabel">Click izq: colocar sprite seleccionado · Click der: borrar sprite bajo cursor</div>
                 <div class="sublabel" id="mixed-status">Sin bloque cargado.</div>
@@ -1739,6 +1772,229 @@ function mixedRefreshPlacedList() {
     });
 }
 
+// =============================================================================
+// ANDROID-ONLY TOUCH LAYER  (additive: desktop mouse handlers stay untouched)
+// =============================================================================
+
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+
+// --- Tool state (only consulted on Android) ---
+let mapTool = 'paint';   // 'paint' | 'erase' | 'select'
+let sprTool = 'paint';   // 'paint' | 'erase'
+let mixedTool = 'place'; // 'place' | 'erase'
+
+function setMapTool(t) {
+    mapTool = t;
+    ['paint', 'erase', 'select'].forEach(name => {
+        const btn = document.getElementById('tool-' + name);
+        if (btn) btn.classList.toggle('active', name === t);
+    });
+    if (t !== 'select') { /* keep selection if any but don't lose clipboard */ }
+    redrawScreenOverlays();
+}
+function setSprTool(t) {
+    sprTool = t;
+    ['paint','erase'].forEach(n => {
+        const btn = document.getElementById('spr-tool-' + n);
+        if (btn) btn.classList.toggle('active', n === t);
+    });
+}
+function setMixedTool(t) {
+    mixedTool = t;
+    ['place','erase'].forEach(n => {
+        const btn = document.getElementById('mixed-tool-' + n);
+        if (btn) btn.classList.toggle('active', n === t);
+    });
+}
+
+if (IS_ANDROID) (function attachTouchHandlers() {
+
+    // ---- helpers ----
+    function isTouch(e) { return e.pointerType !== 'mouse'; }
+
+    // Suppress mouse-event synthesis on the canvases we take over with pointer handlers.
+    // Without this, both pointer* and mouse* fire on touch → double-painting.
+    [scrCanvas, sprEditCanvas, mixedCanvas].forEach(c => {
+        if (!c) return;
+        c.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
+        c.addEventListener('touchmove',  function(e) { e.preventDefault(); }, { passive: false });
+        c.addEventListener('touchend',   function(e) { e.preventDefault(); }, { passive: false });
+    });
+
+    // ---- MAP (#screen-canvas): paint / erase / select / paste-on-drag ----
+    let touchSelecting = false;
+    let touchPasting = false;  // when clipboard is set, drag = paste preview
+
+    scrCanvas.addEventListener('pointerdown', function(e) {
+        if (!isTouch(e)) return;
+        e.preventDefault();
+        try { scrCanvas.setPointerCapture(e.pointerId); } catch (_) {}
+
+        const p = mapTileAt(e);
+        if (!p) return;
+        mapHoverX = p.x; mapHoverY = p.y;
+
+        if (mapTool === 'select') {
+            touchSelecting = true;
+            mapSelStart = { x: p.x, y: p.y };
+            mapSelEnd = { x: p.x, y: p.y };
+            redrawScreenOverlays();
+            return;
+        }
+
+        // If clipboard active and not in select mode: drag-preview paste
+        if (mapClipboard) {
+            touchPasting = true;
+            redrawScreenOverlays();   // ghost follows finger via mapHoverX/Y
+            return;
+        }
+
+        // Otherwise paint or erase
+        rightClick = (mapTool === 'erase');
+        isDrawing = true;
+        screenPlace(e);
+    }, { passive: false });
+
+    scrCanvas.addEventListener('pointermove', function(e) {
+        if (!isTouch(e)) return;
+        const p = mapTileAt(e);
+        if (p) { mapHoverX = p.x; mapHoverY = p.y; } else { mapHoverX = mapHoverY = -1; }
+
+        if (touchSelecting && p) {
+            mapSelEnd = { x: p.x, y: p.y };
+            redrawScreenOverlays();
+        } else if (touchPasting) {
+            redrawScreenOverlays();   // ghost moves with finger
+        } else if (isDrawing) {
+            screenPlace(e);
+        }
+    }, { passive: false });
+
+    function endMapTouch() {
+        if (touchPasting && mapClipboard && mapHoverX >= 0 && mapHoverY >= 0) {
+            mapPasteBlock(mapHoverX, mapHoverY);
+        }
+        touchSelecting = false;
+        touchPasting = false;
+        isDrawing = false;
+    }
+    scrCanvas.addEventListener('pointerup', function(e) {
+        if (!isTouch(e)) return;
+        endMapTouch();
+    });
+    scrCanvas.addEventListener('pointercancel', function(e) {
+        if (!isTouch(e)) return;
+        endMapTouch();
+        mapHoverX = mapHoverY = -1;
+        redrawScreenOverlays();
+    });
+
+    // ---- SPRITE EDITOR (#spr-edit-canvas): paint / erase via sprTool ----
+    sprEditCanvas.addEventListener('pointerdown', function(e) {
+        if (!isTouch(e)) return;
+        e.preventDefault();
+        try { sprEditCanvas.setPointerCapture(e.pointerId); } catch (_) {}
+        sprIsDrawing = true;
+        sprRightBtn = (sprTool === 'erase');
+        sprEditPlace(e);
+    }, { passive: false });
+    sprEditCanvas.addEventListener('pointermove', function(e) {
+        if (!isTouch(e)) return;
+        if (sprIsDrawing) sprEditPlace(e);
+    }, { passive: false });
+    sprEditCanvas.addEventListener('pointerup', function(e) {
+        if (!isTouch(e)) return;
+        sprIsDrawing = false;
+    });
+
+    // ---- MIXED canvas: place / erase + long-press to delete placed sprite ----
+    let mixedLongPressTimer = null;
+    let mixedLongPressFired = false;
+    const LONG_PRESS_MS = 400;
+
+    function mixedDeleteAt(px, py) {
+        for (let i = mixedSprites.length - 1; i >= 0; i--) {
+            const s = mixedSprites[i];
+            const sz = s.mode === 8 ? 8 : 16;
+            if (px >= s.x && px < s.x + sz && py >= s.y && py < s.y + sz) {
+                mixedSprites.splice(i, 1);
+                mixedRefreshPlacedList(); mixedDraw();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    mixedCanvas.addEventListener('pointerdown', function(e) {
+        if (!isTouch(e)) return;
+        e.preventDefault();
+        try { mixedCanvas.setPointerCapture(e.pointerId); } catch (_) {}
+        const { px, py } = mixedCanvasPx(e);
+        mixedHoverPx = px; mixedHoverPy = py;
+        mixedLongPressFired = false;
+
+        if (mixedTool === 'erase') {
+            mixedDeleteAt(px, py);
+            return;
+        }
+
+        // Show ghost while finger is down
+        mixedDraw();
+
+        // Long-press to delete an existing placed sprite (only if one is under finger)
+        mixedLongPressTimer = setTimeout(() => {
+            mixedLongPressFired = true;
+            mixedDeleteAt(px, py);
+        }, LONG_PRESS_MS);
+    }, { passive: false });
+
+    mixedCanvas.addEventListener('pointermove', function(e) {
+        if (!isTouch(e)) return;
+        const { px, py } = mixedCanvasPx(e);
+        if (px !== mixedHoverPx || py !== mixedHoverPy) {
+            // Movement cancels long-press
+            if (mixedLongPressTimer) { clearTimeout(mixedLongPressTimer); mixedLongPressTimer = null; }
+            mixedHoverPx = px; mixedHoverPy = py;
+            mixedDraw();
+        }
+    }, { passive: false });
+
+    mixedCanvas.addEventListener('pointerup', function(e) {
+        if (!isTouch(e)) return;
+        if (mixedLongPressTimer) { clearTimeout(mixedLongPressTimer); mixedLongPressTimer = null; }
+
+        if (mixedLongPressFired) {
+            // Already handled (deleted)
+            mixedLongPressFired = false;
+            return;
+        }
+        if (mixedTool === 'erase') return; // already handled on down
+
+        // Place sprite at lift position (snapped)
+        const { px, py } = mixedCanvasPx(e);
+        const { sx, sy } = mixedSnapToTile(px, py);
+        mixedSprites.push({
+            id: mixedNextId++,
+            x: sx, y: sy,
+            setIdx: mixedSelectedSet,
+            sprIdx: mixedSelectedIdx,
+            mode: mixedSpriteMode
+        });
+        mixedRefreshPlacedList();
+        mixedDraw();
+    });
+    mixedCanvas.addEventListener('pointercancel', function() {
+        if (mixedLongPressTimer) { clearTimeout(mixedLongPressTimer); mixedLongPressTimer = null; }
+        mixedLongPressFired = false;
+        mixedHoverPx = mixedHoverPy = -1;
+        mixedDraw();
+    });
+
+    // Tileset, sprite picker, mixed picker, palettes: no override needed.
+    // The browser will synthesize a mousedown from the tap and the existing
+    // selection handlers (which we leave untouched) will fire normally.
+
+})();
 </script>
 </body>
 </html>
